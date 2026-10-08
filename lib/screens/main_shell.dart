@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/constants/app_colors.dart';
 import '../core/constants/app_strings.dart';
+import '../widgets/ad_banner_slot.dart';
 import '../widgets/home_style.dart';
 import 'home/home_screen.dart';
 import 'settings/settings_screen.dart';
@@ -38,7 +39,8 @@ class MainShellState extends State<MainShell> {
     setState(() => _index = i);
   }
 
-  void _openMore(BuildContext context, {ShopRewardsTab openShopTab = ShopRewardsTab.all}) {
+  void _openMore(BuildContext context,
+      {ShopRewardsTab openShopTab = ShopRewardsTab.all}) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
@@ -50,19 +52,24 @@ class MainShellState extends State<MainShell> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.storefront_outlined, color: AppColors.primaryDark),
-              title: Text(AppStrings.t(context, 'navShop'), style: HomeStyle.gridLabel()),
+              leading: const Icon(Icons.storefront_outlined,
+                  color: AppColors.primaryDark),
+              title: Text(AppStrings.t(context, 'navShop'),
+                  style: HomeStyle.gridLabel()),
               onTap: () {
                 Navigator.pop(ctx);
                 openShop(tab: openShopTab);
               },
             ),
             ListTile(
-              leading: const Icon(Icons.settings_outlined, color: AppColors.primaryDark),
-              title: Text(AppStrings.t(context, 'navSettings'), style: HomeStyle.gridLabel()),
+              leading: const Icon(Icons.settings_outlined,
+                  color: AppColors.primaryDark),
+              title: Text(AppStrings.t(context, 'navSettings'),
+                  style: HomeStyle.gridLabel()),
               onTap: () {
                 Navigator.pop(ctx);
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()));
               },
             ),
             const SizedBox(height: 8),
@@ -92,9 +99,15 @@ class MainShellState extends State<MainShell> {
           child: _buildTab(_index),
         ),
       ),
-      bottomNavigationBar: _BottomNav(
-        index: _index,
-        onChanged: _onTabChanged,
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const AdBannerSlot(),
+          _BottomNav(
+            index: _index,
+            onChanged: _onTabChanged,
+          ),
+        ],
       ),
     );
   }
@@ -141,7 +154,8 @@ class _BottomNav extends StatelessWidget {
             active: index == 1,
             activeColor: active,
             inactiveColor: inactive,
-            icon: Icon(Icons.favorite_rounded, size: 24, color: index == 1 ? active : inactive),
+            icon: Icon(Icons.favorite_rounded,
+                size: 24, color: index == 1 ? active : inactive),
             onTap: () => onChanged(1),
           ),
           _NavItem(
@@ -149,7 +163,8 @@ class _BottomNav extends StatelessWidget {
             active: index == 2,
             activeColor: active,
             inactiveColor: inactive,
-            icon: Icon(Icons.bar_chart_rounded, size: 24, color: index == 2 ? active : inactive),
+            icon: Icon(Icons.bar_chart_rounded,
+                size: 24, color: index == 2 ? active : inactive),
             onTap: () => onChanged(2),
           ),
           _NavItem(
@@ -194,7 +209,9 @@ class _NavItem extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
           decoration: BoxDecoration(
-            color: active ? AppColors.pastelTeal.withValues(alpha: 0.22) : Colors.transparent,
+            color: active
+                ? AppColors.pastelTeal.withValues(alpha: 0.22)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(16),
           ),
           child: SizedBox(

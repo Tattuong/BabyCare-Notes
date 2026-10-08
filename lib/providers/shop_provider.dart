@@ -20,7 +20,7 @@ enum ShopPurchaseResult {
   error,
 }
 
-class ShopProvider extends ChangeNotifier {
+class ShopProvider extends ChangeNotifier with WidgetsBindingObserver {
   static const _coinsKey = 'bcn_coins';
   static const _ownedKey = 'bcn_owned_items';
   static const _activeThemeKey = 'bcn_active_theme';
@@ -45,6 +45,8 @@ class ShopProvider extends ChangeNotifier {
   String _activeSkinId = ShopCatalog.defaultSkinId;
   bool _isPurchasing = false;
   bool _isLoading = true;
+  Timer? _purchaseWatchdog;
+  int _purchaseAttempt = 0;
   String? _lastMessage;
   Set<String> _processedPurchaseIds = {};
   ShopCoinEvent? _lastCoinEvent;
@@ -63,7 +65,9 @@ class ShopProvider extends ChangeNotifier {
 
   bool get isBillingDisabled => _configService.isBillingDisabled;
   bool get isBillingAvailable =>
-      !isBillingDisabled && _billing.isAvailable && _billing.products.isNotEmpty;
+      !isBillingDisabled &&
+      _billing.isAvailable &&
+      _billing.products.isNotEmpty;
   IapConfigStatus get configStatus => _configService.status;
 
   bool get hasRemoveAds => _ownedItems.contains('remove_ads');
@@ -78,6 +82,10 @@ class ShopProvider extends ChangeNotifier {
 
   bool _initialized = false;
 
+  ShopProvider() {
+    WidgetsBinding.instance.addObserver(this);
+  }
+
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
@@ -88,7 +96,8 @@ class ShopProvider extends ChangeNotifier {
     if (!isBillingDisabled && (Platform.isAndroid || Platform.isIOS)) {
       await _billing.init(
         onPurchase: _handlePurchase,
-        onError: () => notifyListeners(),
+        onError: _onPurchaseError,
+        onCanceled: _onPurchaseCanceled,
       );
     }
 
@@ -105,29 +114,35 @@ class ShopProvider extends ChangeNotifier {
     _coins = await StorageService.instance.getInt(_coinsKey) ?? 0;
     final owned = await StorageService.instance.getStringList(_ownedKey);
     _ownedItems = owned?.toSet() ?? {};
-    _activeThemeId =
-        await StorageService.instance.getString(_activeThemeKey) ?? ShopCatalog.defaultThemeId;
+    _activeThemeId = await StorageService.instance.getString(_activeThemeKey) ??
+        ShopCatalog.defaultThemeId;
     _activeBackgroundId =
-        await StorageService.instance.getString(_activeBgKey) ?? ShopCatalog.defaultBackgroundId;
-    _activeSkinId =
-        await StorageService.instance.getString(_activeSkinKey) ?? ShopCatalog.defaultSkinId;
-    final processed = await StorageService.instance.getStringList(_processedPurchasesKey);
+        await StorageService.instance.getString(_activeBgKey) ??
+            ShopCatalog.defaultBackgroundId;
+    _activeSkinId = await StorageService.instance.getString(_activeSkinKey) ??
+        ShopCatalog.defaultSkinId;
+    final processed =
+        await StorageService.instance.getStringList(_processedPurchasesKey);
     _processedPurchaseIds = processed?.toSet() ?? {};
   }
 
   Future<void> _saveLocal() async {
     await StorageService.instance.saveInt(_coinsKey, _coins);
-    await StorageService.instance.saveStringList(_ownedKey, _ownedItems.toList());
+    await StorageService.instance
+        .saveStringList(_ownedKey, _ownedItems.toList());
     await StorageService.instance.saveString(_activeThemeKey, _activeThemeId);
     await StorageService.instance.saveString(_activeBgKey, _activeBackgroundId);
     await StorageService.instance.saveString(_activeSkinKey, _activeSkinId);
-    await StorageService.instance.saveStringList(_processedPurchasesKey, _processedPurchaseIds.toList());
+    await StorageService.instance
+        .saveStringList(_processedPurchasesKey, _processedPurchaseIds.toList());
   }
 
   bool ownsItem(String id) => _ownedItems.contains(id);
 
   bool canAddMoreBabies(int currentCount) {
-    final limit = hasMultiBaby ? IapConstants.premiumBabyLimit : IapConstants.freeBabyLimit;
+    final limit = hasMultiBaby
+        ? IapConstants.premiumBabyLimit
+        : IapConstants.freeBabyLimit;
     return currentCount < limit;
   }
 
@@ -164,37 +179,114 @@ class ShopProvider extends ChangeNotifier {
 
   Future<bool> buyCoinPack(ProductDetails product) async {
     if (isBillingDisabled || !_billing.isAvailable) return false;
-    _isPurchasing = true;
-    _lastMessage = null;
-    notifyListeners();
-    final ok = await _billing.buyCoinPack(product);
-    if (!ok) {
-      _isPurchasing = false;
-      _lastMessage = 'purchaseFailed';
-      notifyListeners();
+    _beginPurchase();
+    try {
+      final ok = await _billing.buyCoinPack(product);
+      if (!ok) _failPurchase();
+      return ok;
+    } catch (_) {
+      _failPurchase();
+      return false;
     }
-    return ok;
   }
 
   Future<bool> buyRemoveAdsViaBilling() async {
-    if (isBillingDisabled || !_billing.isAvailable || _billing.removeAdsProduct == null) {
+    if (isBillingDisabled ||
+        !_billing.isAvailable ||
+        _billing.removeAdsProduct == null) {
       return false;
     }
     if (hasRemoveAds) return false;
+    _beginPurchase();
+    try {
+      final ok = await _billing.buyRemoveAds();
+      if (!ok) _failPurchase();
+      return ok;
+    } catch (_) {
+      _failPurchase();
+      return false;
+    }
+  }
+
+  void _beginPurchase() {
+    _purchaseAttempt++;
     _isPurchasing = true;
     _lastMessage = null;
+    _armWatchdog(const Duration(seconds: 12));
     notifyListeners();
-    final ok = await _billing.buyRemoveAds();
-    if (!ok) {
-      _isPurchasing = false;
-      _lastMessage = 'purchaseFailed';
-      notifyListeners();
+  }
+
+  void _armWatchdog(Duration delay) {
+    _purchaseWatchdog?.cancel();
+    final attempt = _purchaseAttempt;
+    _purchaseWatchdog = Timer(delay, () => _onWatchdog(attempt));
+  }
+
+  void _onWatchdog(int attempt) {
+    if (attempt != _purchaseAttempt || !_isPurchasing) return;
+    final state = WidgetsBinding.instance.lifecycleState;
+    if (state != AppLifecycleState.resumed) {
+      _armWatchdog(const Duration(seconds: 5));
+      return;
     }
-    return ok;
+    _isPurchasing = false;
+    _purchaseWatchdog = null;
+    notifyListeners();
+  }
+
+  /// Clears a spinner left over from the last attempt. No-ops unless the app
+  /// is in the foreground, so Play staying open does not drop the attempt.
+  void releasePurchaseUi() {
+    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    if (!_isPurchasing) return;
+    _purchaseAttempt++;
+    _purchaseWatchdog?.cancel();
+    _purchaseWatchdog = null;
+    _isPurchasing = false;
+    notifyListeners();
+  }
+
+  void _failPurchase() {
+    if (!_isPurchasing) return;
+    _purchaseAttempt++;
+    _purchaseWatchdog?.cancel();
+    _purchaseWatchdog = null;
+    _isPurchasing = false;
+    _lastMessage = 'purchaseFailed';
+    notifyListeners();
+  }
+
+  void _onPurchaseError() {
+    if (!_isPurchasing) return;
+    _failPurchase();
+  }
+
+  void _onPurchaseCanceled() {
+    if (!_isPurchasing) return;
+    _purchaseAttempt++;
+    _purchaseWatchdog?.cancel();
+    _purchaseWatchdog = null;
+    _isPurchasing = false;
+    notifyListeners();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_isPurchasing) return;
+    if (state == AppLifecycleState.resumed) {
+      _armWatchdog(const Duration(milliseconds: 600));
+    }
   }
 
   Future<void> _handlePurchase(PurchaseDetails purchase) async {
-    final purchaseId = purchase.purchaseID ?? '${purchase.productID}_${purchase.transactionDate}';
+    _purchaseWatchdog?.cancel();
+    _purchaseWatchdog = null;
+    _purchaseAttempt++;
+
+    final purchaseId = purchase.purchaseID ??
+        '${purchase.productID}_${purchase.transactionDate}';
     if (_processedPurchaseIds.contains(purchaseId)) {
       _isPurchasing = false;
       notifyListeners();
@@ -292,28 +384,35 @@ class ShopProvider extends ChangeNotifier {
   }
 
   Future<void> selectTheme(String themeId) async {
-    if (themeId != ShopCatalog.defaultThemeId && !_ownedItems.contains(themeId)) return;
+    if (themeId != ShopCatalog.defaultThemeId && !_ownedItems.contains(themeId)) {
+      return;
+    }
     _activeThemeId = themeId;
     await _saveLocal();
     notifyListeners();
   }
 
   Future<void> selectBackground(String bgId) async {
-    if (bgId != ShopCatalog.defaultBackgroundId && !_ownedItems.contains(bgId)) return;
+    if (bgId != ShopCatalog.defaultBackgroundId && !_ownedItems.contains(bgId)) {
+      return;
+    }
     _activeBackgroundId = bgId;
     await _saveLocal();
     notifyListeners();
   }
 
   Future<void> selectSkin(String skinId) async {
-    if (skinId != ShopCatalog.defaultSkinId && !_ownedItems.contains(skinId)) return;
+    if (skinId != ShopCatalog.defaultSkinId && !_ownedItems.contains(skinId)) {
+      return;
+    }
     _activeSkinId = skinId;
     await _saveLocal();
     notifyListeners();
   }
 
   Future<void> resetThemeToDefault() => selectTheme(ShopCatalog.defaultThemeId);
-  Future<void> resetBackgroundToDefault() => selectBackground(ShopCatalog.defaultBackgroundId);
+  Future<void> resetBackgroundToDefault() =>
+      selectBackground(ShopCatalog.defaultBackgroundId);
   Future<void> resetSkinToDefault() => selectSkin(ShopCatalog.defaultSkinId);
 
   void clearLastMessage() => _lastMessage = null;
@@ -328,6 +427,8 @@ class ShopProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _purchaseWatchdog?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _billing.dispose();
     super.dispose();
   }

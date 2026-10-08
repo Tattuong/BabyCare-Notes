@@ -3,7 +3,7 @@ description: BabyCare Notes - Every Precious Moment Matters. Track baby developm
 
 publish_to: "none"
 
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ">=3.4.3 <4.0.0"
@@ -27,6 +27,9 @@ dependencies:
   timezone: ^0.10.0
   share_plus: ^10.1.4
   image_picker: ^1.1.2
+  google_mobile_ads: ^5.3.1
+  image_picker_android: ^0.8.12
+  image_picker_platform_interface: ^2.10.0
   path_provider: ^2.1.5
   path: ^1.9.1
 
